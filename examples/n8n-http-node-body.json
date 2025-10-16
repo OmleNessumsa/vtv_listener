@@ -1,0 +1,16 @@
+{
+  "method": "POST",
+  "url": "https://<your-vercel-project>.vercel.app/api/publish",
+  "headers": {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer ${PUBLISH_BEARER_TOKEN}"
+  },
+  "body": {
+    "fileKey": "g3csnsTVDzCxVhpRy8c1Pp",
+    "title": "Boerenkool!",
+    "message": "Wordt zoeter na vorst. Oogst tot lente!",
+    "nonce": "{{$json.nonce}}",
+    "signature": "{{$json.signature}}"
+  },
+  "notes": "Genereer nonce=uuidv4 of timestamp; signature = base64(hmac_sha256(JSON_without_signature, SHARED_SECRET))."
+}
