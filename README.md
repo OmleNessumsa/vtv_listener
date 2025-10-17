@@ -1,145 +1,51 @@
-# VTV_POST Listener (Vercel)
+# VTV_POST Listener — Supabase variant
 
-Een minimalistische, production-ready **listener/bridge** voor jouw Figma plugin **VTV_POST**.
-- **Publish endpoint** (`POST /api/publish`): n8n post hier `title` & `message` na generatie.
-- **Polling endpoint** (`GET /api/last?fileKey=...&since=...`): jouw Figma plugin pollt hier elke paar seconden op nieuwe events.
-- **KV opslag**: gebruikt **Vercel KV** (Upstash Redis) om laatste event per `fileKey` op te slaan.
-- **HMAC beveiliging (optioneel)**: verifieert `signature` van de payload met je `SHARED_SECRET`.
+Gebruik deze variant als je **Upstash Redis niet wilt/kan gebruiken**. We slaan de "laatste event per fileKey"
+gewoon op in **Supabase Postgres**. Werkt prima op Vercel en heeft een gratis tier.
 
-> Dit ontwerp is **serverless-vriendelijk** en werkt probleemloos op Vercel zonder dedicated WebSocket infra.
-> Wil je WebSockets/SSE, voeg dan Ably/Pusher of Upstash Pub/Sub toe; dit repo is de eenvoudige en robuuste basis.
+## 1) Supabase aanmaken
+- Maak een Supabase project aan en kopieer:
+  - `SUPABASE_URL`
+  - `SUPABASE_SERVICE_ROLE_KEY` (server-side key; bewaar veilig)
+- Zet deze als Environment Variables in je Vercel project.
 
-## Snelstart
+## 2) Database schema
+Voer deze SQL uit in Supabase SQL editor:
 
-1. **Maak een KV store** in Vercel (Project → Storage → KV). Kopieer de env vars.
-2. **Env**: maak `.env` met hieronder genoemde variabelen (of gebruik Vercel Project Settings → Environment Variables).
-3. **Deploy** naar Vercel (link je Git repo en druk op Deploy).
+```sql
+-- Tabel met laatste event per fileKey
+create table if not exists public.vtv_last (
+  file_key text primary key,
+  title text not null,
+  message text not null,
+  version integer not null default 0,
+  ts bigint not null,
+  at text not null
+);
 
-### Vereiste ENV variabelen
-
-Maak `.env` (lokaal) of stel via Vercel in:
-
-```bash
-KV_REST_API_URL=...           # van Vercel KV
-KV_REST_API_TOKEN=...         # van Vercel KV
-# Optioneel beveiliging voor /api/publish
-SHARED_SECRET=supergeheim123  # eigen sterk geheim
-# Optioneel JWT-ish inkomend token (basic gating) dat clients moeten meesturen
-PUBLISH_BEARER_TOKEN=         # leeg laten = geen bearer check
+-- Nonce tabel voor replay-bescherming
+create table if not exists public.vtv_nonce (
+  file_key text not null,
+  nonce text not null,
+  created_at timestamptz not null default now(),
+  constraint vtv_nonce_pk primary key (file_key, nonce)
+);
 ```
 
-> Gebruik **een sterke `SHARED_SECRET`** en bewaar die alleen in n8n en de listener.
+> Let op: we verhogen `version` in applicatielaag (select → +1 → upsert). Voor deze use-case met lage schrijffrequentie
+is dat voldoende. Als je 100% atomisch wil, kan ik een Postgres functie met `insert ... on conflict ... do update set version = vtv_last.version + 1 returning version` voor je schrijven.
 
-## Endpoints
+## 3) Deploy naar Vercel
+- Voeg deze repo/patch toe aan je project, commit & push.
+- `vercel.json` staat al op v2 met Node 20.
+- Test: `GET /api/health` (eventueel kun je de health endpoint zelf toevoegen) en:
+  - `POST /api/publish` met body `{"fileKey":"...","title":"...","message":"...","nonce":"..."}`
+  - `GET /api/last?fileKey=...`
 
-### `POST /api/publish`
+## 4) Beveiliging (optioneel, aanbevolen)
+- `PUBLISH_BEARER_TOKEN` → vereis `Authorization: Bearer ...` header
+- `SHARED_SECRET` → HMAC signature check (zie README van de KV-variant; code staat hier ook in `src/lib/sign.js`)
+- QStash signing keys (`QSTASH_*`) kun je toevoegen als je via QStash laat deliveren en hun signature wilt valideren.
 
-- **Body (JSON)**:
-  ```json
-  {
-    "fileKey": "g3csnsTVDzCxVhpRy8c1Pp",
-    "title": "Boerenkool!",
-    "message": "Wordt zoeter na vorst. Oogst tot lente!",
-    "nonce": "uuid-v4-of-timestamp",
-    "signature": "base64(hmac_sha256(body_without_signature, SHARED_SECRET))"
-  }
-  ```
-- **Headers**:
-  - Optioneel: `Authorization: Bearer <PUBLISH_BEARER_TOKEN>`
-  - `Content-Type: application/json`
-- **Resultaat**: `{ ok: true, version: <number>, at: <iso> }`
-
-### `GET /api/last?fileKey=...&since=...`
-
-- **Query**:
-  - `fileKey` (required)
-  - `since` (optional) — unix millis of iso; filtert “alleen als nieuwer dan”
-- **Resultaat**:
-  ```json
-  {
-    "ok": true,
-    "event": {
-      "fileKey": "...",
-      "title": "...",
-      "message": "...",
-      "version": 7,
-      "ts": 1734345678123,
-      "at": "2025-10-16T09:23:45.678Z"
-    }
-  }
-  ```
-  Of `{ ok: true, event: null }` als er niks nieuws is.
-
-### `GET /api/health`
-
-Gezondheidscheck.
-
-## Figma plugin (polling) snippet
-
-In je plugin `code.js` (luister-modus), voeg een poller toe:
-
-```js
-const FILE_KEY = "g3csnsTVDzCxVhpRy8c1Pp";
-const BASE_URL = "https://<your-vercel-project>.vercel.app"; // vervang
-let lastVersion = 0;
-
-async function pollLoop() {
-  try {
-    const res = await fetch(`${BASE_URL}/api/last?fileKey=${FILE_KEY}&since=${Date.now()-60000}`);
-    if (res.ok) {
-      const data = await res.json();
-      const ev = data.event;
-      if (ev && ev.version > lastVersion) {
-        lastVersion = ev.version;
-        await applyTitleMessage(ev.title, ev.message);
-      }
-    }
-  } catch (e) {
-    // optional: backoff/loggen
-  } finally {
-    setTimeout(pollLoop, 3000); // elke 3s
-  }
-}
-pollLoop();
-```
-
-`applyTitleMessage` is je bestaande logic: `loadFontAsync` → `getNodeById("48:67")` & `("48:69")` → `characters = ...`.
-
-## n8n voorbeeld (HTTP Request node → /api/publish)
-
-Gebruik **RAW** mode (JSON) en zet correct `signature`. Voorbeeld payload zie `examples/n8n-http-node-body.json`. HMAC voorbeeldcode staat in `src/lib/sign.js`.
-
-## Projectstructuur
-
-```
-.
-├─ api/
-│  ├─ health.js
-│  ├─ last.js
-│  └─ publish.js
-├─ src/
-│  └─ lib/
-│     ├─ kv.js
-│     └─ sign.js
-├─ examples/
-│  ├─ n8n-http-node-body.json
-│  └─ figma-plugin-snippet.js
-├─ .env.example
-├─ package.json
-├─ vercel.json
-└─ README.md
-```
-
-## Beveiliging
-
-- `PUBLISH_BEARER_TOKEN`: simpele header gate (optioneel).
-- `SHARED_SECRET`: HMAC van de **hele JSON zonder het signature-veld**. Voorkomt spoofing en replays (in combi met `nonce` + TTL).
-- `KV` keys zijn namespaced per fileKey.
-
-## Data model (KV)
-
-- `file:{fileKey}:last` → JSON met laatste event `{title, message, version, ts, at}`
-- `file:{fileKey}:nonce:{nonce}` → set met TTL (bijv. 10 min) om replays te weren.
-
-Veel plezier! PR’s welkom.
-
+## 5) Figma plugin
+Ongewijzigd: plugin pollt `/api/last` en past title/message toe op de node IDs.

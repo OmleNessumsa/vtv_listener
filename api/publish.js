@@ -1,5 +1,5 @@
-// api/publish.js (patched JSON parsing + readable errors)
-import kv from '../src/lib/kv.js';
+// api/publish.js (Supabase-backed)
+import { pingSchema, insertNonce, upsertEvent } from '../src/lib/store.js';
 import { signPayload, safeEqual } from '../src/lib/sign.js';
 
 async function readJson(req) {
@@ -28,46 +28,37 @@ export default async function handler(req, res) {
       }
     }
 
+    // Optional: verify QStash signature here (if you deliver via QStash)
+
     let body;
-    try {
-      body = await readJson(req);
-    } catch (e) {
-      return res.status(400).json({ ok: false, error: 'Invalid JSON', detail: e.message });
-    }
+    try { body = await readJson(req); }
+    catch (e) { return res.status(400).json({ ok:false, error:'Invalid JSON', detail:e.message }); }
 
     const { fileKey, title, message, nonce, signature } = body || {};
     if (!fileKey || !title || !message) {
-      return res.status(400).json({ ok: false, error: 'Missing fields: fileKey/title/message' });
+      return res.status(400).json({ ok:false, error:'Missing fields: fileKey/title/message' });
     }
     if (!nonce) {
-      return res.status(400).json({ ok: false, error: 'Missing nonce' });
+      return res.status(400).json({ ok:false, error:'Missing nonce' });
     }
 
     const secret = process.env.SHARED_SECRET;
     if (secret) {
       const expected = signPayload(body, secret);
       if (!safeEqual(expected, signature || '')) {
-        return res.status(401).json({ ok: false, error: 'Invalid signature' });
+        return res.status(401).json({ ok:false, error:'Invalid signature' });
       }
     }
 
-    const nonceKey = `file:${fileKey}:nonce:${nonce}`;
-    const nonceSet = await kv.set(nonceKey, '1', { ex: 600, nx: true });
-    if (nonceSet !== 'OK') {
-      return res.status(409).json({ ok: false, error: 'Duplicate nonce (possible replay)' });
-    }
+    await pingSchema();
 
-    const verKey = `file:${fileKey}:version`;
-    const lastKey = `file:${fileKey}:last`;
-    const now = Date.now();
-    const at = new Date(now).toISOString();
-    const version = await kv.incr(verKey);
-    const event = { fileKey, title, message, version, ts: now, at };
+    const ok = await insertNonce(fileKey, nonce);
+    if (!ok) return res.status(409).json({ ok:false, error:'Duplicate nonce (possible replay)' });
 
-    await kv.set(lastKey, JSON.stringify(event));
+    const { version, at } = await upsertEvent({ fileKey, title, message });
 
-    return res.status(200).json({ ok: true, version, at });
+    return res.status(200).json({ ok:true, version, at });
   } catch (err) {
-    return res.status(500).json({ ok: false, error: 'Server error', detail: String(err && err.message || err) });
+    return res.status(500).json({ ok:false, error:'Server error', detail:String(err && err.message || err) });
   }
 }
