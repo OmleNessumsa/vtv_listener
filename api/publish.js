@@ -1,12 +1,12 @@
-// api/publish.js (Supabase-backed + CORS)
+// api/publish.js
 import { pingSchema, insertNonce, upsertEvent } from '../src/lib/store.js';
 import { signPayload, safeEqual } from '../src/lib/sign.js';
 
 function setCORS(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*'); // of je exacte domein
+  res.setHeader('Access-Control-Allow-Origin', '*'); // of jouw exacte domein
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
-  res.setHeader('Access-Control-Max-Age', '86400'); // cache preflight
+  res.setHeader('Access-Control-Max-Age', '86400');
 }
 
 async function readJson(req) {
@@ -27,18 +27,16 @@ export default async function handler(req, res) {
   try {
     if (req.method !== 'POST') {
       res.setHeader('Allow', 'POST,OPTIONS');
-      return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
+      return res.status(405).json({ ok:false, error:'Method Not Allowed' });
     }
 
     const bearer = process.env.PUBLISH_BEARER_TOKEN;
     if (bearer) {
       const auth = req.headers.authorization || '';
       if (!auth.startsWith('Bearer ') || auth.slice(7) !== bearer) {
-        return res.status(401).json({ ok: false, error: 'Unauthorized' });
+        return res.status(401).json({ ok:false, error:'Unauthorized' });
       }
     }
-
-    // (Optioneel) QStash signature verify kan hier, indien je via QStash levert.
 
     let body;
     try { body = await readJson(req); }
@@ -63,3 +61,14 @@ export default async function handler(req, res) {
     await pingSchema();
 
     const ok = await insertNonce(fileKey, nonce);
+    if (!ok) return res.status(409).json({ ok:false, error:'Duplicate nonce (possible replay)' });
+
+    const { version, at } = await upsertEvent({ fileKey, title, message });
+
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return res.status(200).json({ ok:true, version, at });
+  } catch (err) {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return res.status(500).json({ ok:false, error:'Server error', detail:String(err?.message || err) });
+  }
+}
