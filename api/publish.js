@@ -1,6 +1,13 @@
-// api/publish.js (Supabase-backed)
+// api/publish.js (Supabase-backed + CORS)
 import { pingSchema, insertNonce, upsertEvent } from '../src/lib/store.js';
 import { signPayload, safeEqual } from '../src/lib/sign.js';
+
+function setCORS(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*'); // of je exacte domein
+  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+  res.setHeader('Access-Control-Max-Age', '86400'); // cache preflight
+}
 
 async function readJson(req) {
   if (req.body && typeof req.body === 'object') return req.body;
@@ -14,9 +21,12 @@ async function readJson(req) {
 }
 
 export default async function handler(req, res) {
+  setCORS(res);
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
   try {
     if (req.method !== 'POST') {
-      res.setHeader('Allow', 'POST');
+      res.setHeader('Allow', 'POST,OPTIONS');
       return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
     }
 
@@ -28,7 +38,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // Optional: verify QStash signature here (if you deliver via QStash)
+    // (Optioneel) QStash signature verify kan hier, indien je via QStash levert.
 
     let body;
     try { body = await readJson(req); }
@@ -53,12 +63,3 @@ export default async function handler(req, res) {
     await pingSchema();
 
     const ok = await insertNonce(fileKey, nonce);
-    if (!ok) return res.status(409).json({ ok:false, error:'Duplicate nonce (possible replay)' });
-
-    const { version, at } = await upsertEvent({ fileKey, title, message });
-
-    return res.status(200).json({ ok:true, version, at });
-  } catch (err) {
-    return res.status(500).json({ ok:false, error:'Server error', detail:String(err && err.message || err) });
-  }
-}
