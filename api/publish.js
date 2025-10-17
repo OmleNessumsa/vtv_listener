@@ -1,13 +1,6 @@
-// api/publish.js
+// api/publish.js (Supabase-backed)
 import { pingSchema, insertNonce, upsertEvent } from '../src/lib/store.js';
 import { signPayload, safeEqual } from '../src/lib/sign.js';
-
-function setCORS(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*'); // of jouw exacte domein
-  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
-  res.setHeader('Access-Control-Max-Age', '86400');
-}
 
 async function readJson(req) {
   if (req.body && typeof req.body === 'object') return req.body;
@@ -21,22 +14,28 @@ async function readJson(req) {
 }
 
 export default async function handler(req, res) {
-  setCORS(res);
-  if (req.method === 'OPTIONS') return res.status(200).end();
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
   try {
     if (req.method !== 'POST') {
-      res.setHeader('Allow', 'POST,OPTIONS');
-      return res.status(405).json({ ok:false, error:'Method Not Allowed' });
+      res.setHeader('Allow', 'POST');
+      return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
     }
 
     const bearer = process.env.PUBLISH_BEARER_TOKEN;
     if (bearer) {
       const auth = req.headers.authorization || '';
       if (!auth.startsWith('Bearer ') || auth.slice(7) !== bearer) {
-        return res.status(401).json({ ok:false, error:'Unauthorized' });
+        return res.status(401).json({ ok: false, error: 'Unauthorized' });
       }
     }
+
+    // Optional: verify QStash signature here (if you deliver via QStash)
 
     let body;
     try { body = await readJson(req); }
@@ -65,10 +64,8 @@ export default async function handler(req, res) {
 
     const { version, at } = await upsertEvent({ fileKey, title, message });
 
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     return res.status(200).json({ ok:true, version, at });
   } catch (err) {
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    return res.status(500).json({ ok:false, error:'Server error', detail:String(err?.message || err) });
+    return res.status(500).json({ ok:false, error:'Server error', detail:String(err && err.message || err) });
   }
 }
